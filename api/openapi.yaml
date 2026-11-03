@@ -1,0 +1,476 @@
+openapi: 3.1.0
+info:
+  title: Go Ledger Service API
+  version: 1.0.0
+  license:
+    name: MIT
+    identifier: MIT
+  description: |
+    A double-entry payments ledger.
+
+    * All amounts are integers in the currency's minor unit (e.g. cents for USD).
+    * Every write endpoint requires an `Idempotency-Key` header. Retrying a
+      request with the same key and the same body returns the original result
+      with `Idempotent-Replayed: true` instead of posting it again. Reusing a key
+      with a different body is rejected with `422 idempotency_key_reused`.
+      Requests that fail do not consume their key.
+    * Every response carries an `X-Request-ID` header (the caller's value is
+      echoed if provided).
+servers:
+  - url: http://localhost:8080
+# Authentication is out of scope for this service; put it behind a gateway.
+security: []
+tags:
+  - name: Accounts
+    description: Open accounts and read balances and statements.
+  - name: Money movement
+    description: Deposits, withdrawals and transfers. All require an Idempotency-Key.
+  - name: Health
+    description: Liveness and readiness probes.
+
+paths:
+  /v1/accounts:
+    post:
+      tags: [Accounts]
+      operationId: createAccount
+      summary: Open an account
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAccountRequest"
+      responses:
+        "201":
+          description: Account created (or replayed).
+          headers:
+            Location:
+              description: URL of the account.
+              schema:
+                type: string
+                example: /v1/accounts/3b0b5f0e-6f53-4c43-9a59-6f1c4b1f2a10
+            Idempotent-Replayed:
+              $ref: "#/components/headers/IdempotentReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/accounts/{id}:
+    get:
+      tags: [Accounts]
+      operationId: getAccount
+      summary: Get an account and its balance
+      parameters:
+        - $ref: "#/components/parameters/AccountID"
+      responses:
+        "200":
+          description: The account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/accounts/{id}/deposits:
+    post:
+      tags: [Money movement]
+      operationId: deposit
+      summary: Deposit money into an account
+      parameters:
+        - $ref: "#/components/parameters/AccountID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AmountRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/TransactionPosted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/accounts/{id}/withdrawals:
+    post:
+      tags: [Money movement]
+      operationId: withdraw
+      summary: Withdraw money from an account
+      description: Fails with `422 insufficient_funds` if the balance does not cover the amount.
+      parameters:
+        - $ref: "#/components/parameters/AccountID"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AmountRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/TransactionPosted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/accounts/{id}/transactions:
+    get:
+      tags: [Accounts]
+      operationId: listTransactions
+      summary: List an account's transactions
+      description: |
+        Returns the account statement, newest first. Each line shows the signed
+        amount from this account's point of view and the balance right after it.
+        Pagination is keyset based: pass `next_cursor` from the previous page as
+        `cursor` to get the next one.
+      parameters:
+        - $ref: "#/components/parameters/AccountID"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: cursor
+          in: query
+          description: Opaque cursor from a previous page's `next_cursor`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A page of statement lines.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/transfers:
+    post:
+      tags: [Money movement]
+      operationId: transfer
+      summary: Transfer money between two accounts
+      description: Both accounts must use the same currency.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransferRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/TransactionPosted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /healthz:
+    get:
+      tags: [Health]
+      operationId: healthz
+      summary: Liveness probe
+      responses:
+        "200":
+          description: The process is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+
+  /readyz:
+    get:
+      tags: [Health]
+      operationId: readyz
+      summary: Readiness probe
+      description: |
+        Ready when the database is reachable and the service is not shutting
+        down. The message broker is deliberately not checked: while it is down,
+        events wait in the outbox and the API keeps working.
+      responses:
+        "200":
+          description: Ready to serve traffic.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "503":
+          description: Not ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+
+components:
+  parameters:
+    AccountID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client-generated unique key, e.g. a UUID. Up to 255 characters.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+
+  headers:
+    IdempotentReplayed:
+      description: Present with value `true` when the response is a replay of an earlier request.
+      schema:
+        type: string
+        enum: ["true"]
+
+  responses:
+    TransactionPosted:
+      description: Transaction posted (or replayed).
+      headers:
+        Idempotent-Replayed:
+          $ref: "#/components/headers/IdempotentReplayed"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Transaction"
+    BadRequest:
+      description: |
+        Invalid request. Codes: `invalid_request`, `invalid_amount`,
+        `invalid_currency`, `invalid_name`, `same_account`,
+        `idempotency_key_missing`, `idempotency_key_invalid`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: "Unknown account. Code: `account_not_found`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UnprocessableEntity:
+      description: |
+        Valid request that violates a business rule. Codes:
+        `insufficient_funds`, `currency_mismatch`, `balance_overflow`,
+        `idempotency_key_reused`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: "Unexpected error. Code: `internal_error`."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    CreateAccountRequest:
+      type: object
+      additionalProperties: false
+      required: [name, currency]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: Alice
+        currency:
+          type: string
+          description: ISO 4217 code; normalised to upper case.
+          pattern: "^[A-Za-z]{3}$"
+          example: USD
+
+    AmountRequest:
+      type: object
+      additionalProperties: false
+      required: [amount]
+      properties:
+        amount:
+          $ref: "#/components/schemas/Amount"
+
+    TransferRequest:
+      type: object
+      additionalProperties: false
+      required: [from_account_id, to_account_id, amount]
+      properties:
+        from_account_id:
+          type: string
+          format: uuid
+        to_account_id:
+          type: string
+          format: uuid
+        amount:
+          $ref: "#/components/schemas/Amount"
+
+    Amount:
+      type: integer
+      format: int64
+      minimum: 1
+      description: Positive amount in minor units.
+      example: 2500
+
+    Account:
+      type: object
+      required: [id, name, currency, balance, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        currency:
+          type: string
+          example: USD
+        balance:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Current balance in minor units. Never negative.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Entry:
+      type: object
+      required: [account_id, amount, balance_after]
+      properties:
+        account_id:
+          type: string
+          format: uuid
+          description: |
+            Account the entry belongs to. Deposits and withdrawals use an
+            internal per-currency external account as the counterparty.
+        amount:
+          type: integer
+          format: int64
+          description: Signed amount; positive increases the balance, negative decreases it.
+        balance_after:
+          type: integer
+          format: int64
+
+    Transaction:
+      type: object
+      required: [id, type, amount, currency, entries, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [deposit, withdrawal, transfer]
+        amount:
+          $ref: "#/components/schemas/Amount"
+        currency:
+          type: string
+        entries:
+          type: array
+          description: Double-entry legs; their amounts always sum to zero.
+          minItems: 2
+          items:
+            $ref: "#/components/schemas/Entry"
+        created_at:
+          type: string
+          format: date-time
+
+    StatementLine:
+      type: object
+      required: [transaction_id, type, amount, balance_after, currency, created_at]
+      properties:
+        transaction_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [deposit, withdrawal, transfer]
+        amount:
+          type: integer
+          format: int64
+          description: Signed amount from this account's point of view.
+        balance_after:
+          type: integer
+          format: int64
+        currency:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    TransactionList:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/StatementLine"
+        next_cursor:
+          type: [string, "null"]
+          description: Cursor for the next page, or null on the last page.
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: insufficient_funds
+            message:
+              type: string
+              example: insufficient funds
+
+    Status:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
