@@ -21,7 +21,7 @@ import (
 
 func TestMigrateIsIdempotent(t *testing.T) {
 	_, pool := newLedger(t)
-	if err := postgres.Migrate(pool.Config().ConnString()); err != nil {
+	if err := postgres.Migrate(context.Background(), pool.Config().ConnString()); err != nil {
 		t.Fatalf("second migration run: %v", err)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/yohadrian21/go-ledger-service/internal/config"
@@ -21,6 +22,8 @@ import (
 	"github.com/yohadrian21/go-ledger-service/internal/repository/postgres"
 	"github.com/yohadrian21/go-ledger-service/internal/usecase"
 )
+
+const startupTimeout = 30 * time.Second
 
 func main() {
 	if err := run(); err != nil {
@@ -37,17 +40,12 @@ func run() error {
 	log := newLogger(cfg)
 	slog.SetDefault(log)
 
+	log.Info("starting ledger service", "addr", cfg.HTTPAddr, "exchange", cfg.AMQPExchange)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if cfg.MigrateOnStart {
-		if err := postgres.Migrate(cfg.DatabaseURL); err != nil {
-			return err
-		}
-		log.Info("database migrations applied")
-	}
-
-	pool, err := postgres.Connect(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
+	pool, err := connectDatabase(ctx, cfg, log)
 	if err != nil {
 		return err
 	}
@@ -103,6 +101,22 @@ func run() error {
 	}
 	log.Info("shutdown complete")
 	return nil
+}
+
+// connectDatabase applies migrations (if enabled) and opens the connection
+// pool, giving up after startupTimeout instead of hanging on an unreachable
+// database.
+func connectDatabase(ctx context.Context, cfg config.Config, log *slog.Logger) (*pgxpool.Pool, error) {
+	ctx, cancel := context.WithTimeout(ctx, startupTimeout)
+	defer cancel()
+
+	if cfg.MigrateOnStart {
+		if err := postgres.Migrate(ctx, cfg.DatabaseURL); err != nil {
+			return nil, err
+		}
+		log.Info("database migrations applied")
+	}
+	return postgres.Connect(ctx, cfg.DatabaseURL, cfg.DBMaxConns)
 }
 
 func newLogger(cfg config.Config) *slog.Logger {

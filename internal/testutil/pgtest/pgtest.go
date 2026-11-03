@@ -49,7 +49,7 @@ func New(t testing.TB) *pgxpool.Pool {
 	u.Path = "/" + strings.Trim(name, `"`)
 	dbURL := u.String()
 
-	if err := postgres.Migrate(dbURL); err != nil {
+	if err := postgres.Migrate(ctx, dbURL); err != nil {
 		t.Fatalf("migrate test database: %v", err)
 	}
 	pool, err := postgres.Connect(ctx, dbURL, 32)

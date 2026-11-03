@@ -74,7 +74,7 @@ func Connect(ctx context.Context, databaseURL string, maxConns int32) (*pgxpool.
 
 // Migrate applies all pending schema migrations. golang-migrate holds an
 // advisory lock while migrating, so concurrent instances are safe.
-func Migrate(databaseURL string) (err error) {
+func Migrate(ctx context.Context, databaseURL string) (err error) {
 	src, err := iofs.New(migrations.FS, ".")
 	if err != nil {
 		return fmt.Errorf("load migrations: %w", err)
@@ -82,6 +82,11 @@ func Migrate(databaseURL string) (err error) {
 	db, err := sql.Open("pgx", databaseURL)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
+	}
+	// golang-migrate does not take a context, so make sure the database is
+	// reachable before handing over the connection.
+	if err := db.PingContext(ctx); err != nil {
+		return errors.Join(fmt.Errorf("ping database: %w", err), db.Close())
 	}
 	driver, err := pgxmigrate.WithInstance(db, &pgxmigrate.Config{})
 	if err != nil {
