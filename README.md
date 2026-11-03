@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/yohadrian21/go-ledger-service/actions/workflows/ci.yml/badge.svg)](https://github.com/yohadrian21/go-ledger-service/actions/workflows/ci.yml)
 [![Go version](https://img.shields.io/github/go-mod/go-version/yohadrian21/go-ledger-service)](go.mod)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A payments ledger service in Go. It keeps balances in a double-entry ledger in PostgreSQL and exposes a REST API for opening accounts, depositing, withdrawing and transferring money. Balances can never go negative, and a request is never applied twice, even under heavy concurrency or client retries: row locks taken in a consistent order prevent double spending and deadlocks, and idempotency keys are stored atomically with each posting. Every change also writes an event to a transactional outbox, and a background worker publishes those events to RabbitMQ. The code follows Clean Architecture, uses a small set of well-known libraries, and is tested with unit tests, integration tests against real PostgreSQL and RabbitMQ, and a concurrency suite that shows there is no double spending.
 
@@ -261,3 +262,7 @@ curl -s "localhost:8080/v1/accounts/$ALICE/transactions?limit=10"
 - **Hot external account.** Deposits and withdrawals in the same currency all lock the same external account row, which limits throughput for that currency. You could fix this by sharding the external account or by not caching its balance.
 - **Key and event retention.** Idempotency keys are global and kept forever, and published outbox rows are never deleted. A production system would scope keys per client, expire them after a retention window, and clean up published events.
 - **Out of scope:** authentication, rate limiting, currency conversion, metrics and tracing (OpenTelemetry), and `lock_timeout` / `statement_timeout` tuning.
+
+## License
+
+Released under the [MIT License](LICENSE). Copyright (c) 2026 Yohanes Adrian Risangtomo.

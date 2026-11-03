@@ -2,6 +2,9 @@ openapi: 3.1.0
 info:
   title: Go Ledger Service API
   version: 1.0.0
+  license:
+    name: MIT
+    identifier: MIT
   description: |
     A double-entry payments ledger.
 
