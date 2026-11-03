@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -77,7 +78,7 @@ func withAccessLog(log *slog.Logger, next http.Handler) http.Handler {
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.Int("status", rec.status),
-			slog.Duration("duration", time.Since(start)),
+			slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000),
 			slog.String("request_id", requestIDFrom(r.Context())),
 		)
 	})
@@ -91,7 +92,7 @@ func withRecovery(log *slog.Logger, next http.Handler) http.Handler {
 			if v == nil {
 				return
 			}
-			if v == http.ErrAbortHandler {
+			if err, ok := v.(error); ok && errors.Is(err, http.ErrAbortHandler) {
 				panic(v)
 			}
 			log.ErrorContext(r.Context(), "panic while serving request",

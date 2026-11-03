@@ -71,8 +71,14 @@ func newClient(t *testing.T, ready httpapi.ReadinessCheck) *client {
 	return &client{t: t, srv: srv}
 }
 
+type response struct {
+	method, path string
+	StatusCode   int
+	Header       http.Header
+}
+
 // do sends a request and decodes the JSON response into out (if not nil).
-func (c *client) do(method, path, idempotencyKey, body string, out any) *http.Response {
+func (c *client) do(method, path, idempotencyKey, body string, out any) response {
 	c.t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), method, c.srv.URL+path, strings.NewReader(body))
 	if err != nil {
@@ -96,7 +102,7 @@ func (c *client) do(method, path, idempotencyKey, body string, out any) *http.Re
 			c.t.Fatalf("%s %s: decode %q: %v", method, path, raw, err)
 		}
 	}
-	return resp
+	return response{method: method, path: path, StatusCode: resp.StatusCode, Header: resp.Header}
 }
 
 func (c *client) createAccount(currency string) account {
@@ -117,10 +123,10 @@ func (c *client) deposit(id string, amount string) {
 	}
 }
 
-func expectStatus(t *testing.T, resp *http.Response, want int) {
+func expectStatus(t *testing.T, resp response, want int) {
 	t.Helper()
 	if resp.StatusCode != want {
-		t.Fatalf("%s %s: status %d, want %d", resp.Request.Method, resp.Request.URL.Path, resp.StatusCode, want)
+		t.Fatalf("%s %s: status %d, want %d", resp.method, resp.path, resp.StatusCode, want)
 	}
 }
 
