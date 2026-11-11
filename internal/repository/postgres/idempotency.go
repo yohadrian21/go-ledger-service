@@ -10,15 +10,15 @@ type idempotencyRepo struct {
 	db DBTX
 }
 
-// Reserve relies on the primary key: if a concurrent transaction has
-// inserted the same key but not committed yet, the INSERT waits for it. Once
-// it commits, ON CONFLICT DO NOTHING applies and the existing row is returned;
-// if it rolls back, this insert succeeds.
+// Reserve relies on the primary key (client_id, key): if a concurrent
+// transaction has inserted the same key but not committed yet, the INSERT
+// waits for it. Once it commits, ON CONFLICT DO NOTHING applies and the
+// existing row is returned; if it rolls back, this insert succeeds.
 func (r idempotencyRepo) Reserve(ctx context.Context, rec usecase.IdempotencyRecord) (usecase.IdempotencyRecord, bool, error) {
 	tag, err := r.db.Exec(ctx,
-		`INSERT INTO idempotency_keys (key, request_hash, resource_id) VALUES ($1, $2, $3)
-		 ON CONFLICT (key) DO NOTHING`,
-		rec.Key, rec.RequestHash, rec.ResourceID)
+		`INSERT INTO idempotency_keys (client_id, key, request_hash, resource_id, created_at) VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (client_id, key) DO NOTHING`,
+		rec.ClientID, rec.Key, rec.RequestHash, rec.ResourceID, rec.CreatedAt)
 	if err != nil {
 		return usecase.IdempotencyRecord{}, false, err
 	}
@@ -26,9 +26,11 @@ func (r idempotencyRepo) Reserve(ctx context.Context, rec usecase.IdempotencyRec
 		return rec, true, nil
 	}
 
-	existing := usecase.IdempotencyRecord{Key: rec.Key}
+	existing := usecase.IdempotencyRecord{ClientID: rec.ClientID, Key: rec.Key}
 	err = r.db.QueryRow(ctx,
-		`SELECT request_hash, resource_id FROM idempotency_keys WHERE key = $1`, rec.Key).
-		Scan(&existing.RequestHash, &existing.ResourceID)
+		`SELECT request_hash, resource_id, created_at FROM idempotency_keys WHERE client_id = $1 AND key = $2`,
+		rec.ClientID, rec.Key).
+		Scan(&existing.RequestHash, &existing.ResourceID, &existing.CreatedAt)
+	existing.CreatedAt = existing.CreatedAt.UTC()
 	return existing, false, err
 }

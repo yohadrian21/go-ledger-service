@@ -42,18 +42,21 @@ type TransactionRepository interface {
 }
 
 // IdempotencyRecord links an idempotency key to the request it was first used
-// with and the resource that request created.
+// with and the resource that request created. Keys are scoped to the client
+// that sent them: two clients can use the same key independently.
 type IdempotencyRecord struct {
+	ClientID    string
 	Key         string
 	RequestHash string
 	ResourceID  uuid.UUID
+	CreatedAt   time.Time
 }
 
 // IdempotencyRepository stores idempotency keys.
 type IdempotencyRepository interface {
-	// Reserve stores rec unless rec.Key already exists, and returns the stored
-	// record and whether this call created it. If another in-flight
-	// transaction holds the same key, Reserve waits for it to finish.
+	// Reserve stores rec unless (rec.ClientID, rec.Key) already exists, and
+	// returns the stored record and whether this call created it. If another
+	// in-flight transaction holds the same key, Reserve waits for it to finish.
 	Reserve(ctx context.Context, rec IdempotencyRecord) (IdempotencyRecord, bool, error)
 }
 

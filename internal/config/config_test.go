@@ -9,6 +9,7 @@ import (
 
 func TestLoadDefaults(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://localhost/ledger")
+	t.Setenv("AUTH_API_KEYS", "placeholder")
 
 	cfg, err := Load()
 	if err != nil {
@@ -27,6 +28,7 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadOverrides(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://db/ledger")
+	t.Setenv("AUTH_API_KEYS", "placeholder")
 	t.Setenv("HTTP_ADDR", ":9090")
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("LOG_FORMAT", "text")
@@ -48,6 +50,7 @@ func TestLoadOverrides(t *testing.T) {
 
 func TestLoadReportsAllErrors(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
+	t.Setenv("AUTH_API_KEYS", " ")
 	t.Setenv("LOG_LEVEL", "loud")
 	t.Setenv("DB_MAX_CONNS", "99999999999")
 	t.Setenv("OUTBOX_BATCH_SIZE", "0")
@@ -57,7 +60,7 @@ func TestLoadReportsAllErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error")
 	}
-	for _, want := range []string{"DATABASE_URL", "LOG_LEVEL", "DB_MAX_CONNS", "OUTBOX_BATCH_SIZE", "OUTBOX_POLL_INTERVAL"} {
+	for _, want := range []string{"DATABASE_URL", "AUTH_API_KEYS", "LOG_LEVEL", "DB_MAX_CONNS", "OUTBOX_BATCH_SIZE", "OUTBOX_POLL_INTERVAL"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error does not mention %s: %v", want, err)
 		}

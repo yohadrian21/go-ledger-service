@@ -20,14 +20,15 @@ const (
 	readinessTimeout         = 2 * time.Second
 )
 
-// Ledger is the subset of the use cases the HTTP API depends on.
+// Ledger is the subset of the use cases the HTTP API depends on. Every call
+// runs on behalf of the authenticated caller, which the use cases authorize.
 type Ledger interface {
-	CreateAccount(ctx context.Context, in usecase.CreateAccountInput) (domain.Account, bool, error)
-	GetAccount(ctx context.Context, id uuid.UUID) (domain.Account, error)
-	Deposit(ctx context.Context, in usecase.DepositInput) (domain.Transaction, bool, error)
-	Withdraw(ctx context.Context, in usecase.WithdrawInput) (domain.Transaction, bool, error)
-	Transfer(ctx context.Context, in usecase.TransferInput) (domain.Transaction, bool, error)
-	ListTransactions(ctx context.Context, in usecase.ListTransactionsInput) (usecase.TransactionPage, error)
+	CreateAccount(ctx context.Context, caller usecase.Principal, in usecase.CreateAccountInput) (domain.Account, bool, error)
+	GetAccount(ctx context.Context, caller usecase.Principal, id uuid.UUID) (domain.Account, error)
+	Deposit(ctx context.Context, caller usecase.Principal, in usecase.DepositInput) (domain.Transaction, bool, error)
+	Withdraw(ctx context.Context, caller usecase.Principal, in usecase.WithdrawInput) (domain.Transaction, bool, error)
+	Transfer(ctx context.Context, caller usecase.Principal, in usecase.TransferInput) (domain.Transaction, bool, error)
+	ListTransactions(ctx context.Context, caller usecase.Principal, in usecase.ListTransactionsInput) (usecase.TransactionPage, error)
 }
 
 // ReadinessCheck reports whether the service can serve traffic.
@@ -35,23 +36,29 @@ type ReadinessCheck func(ctx context.Context) error
 
 type handler struct {
 	ledger Ledger
+	authn  Authenticator
 	ready  ReadinessCheck
 	log    *slog.Logger
 }
 
 // NewHandler returns the HTTP handler with all routes and middleware.
-func NewHandler(ledger Ledger, ready ReadinessCheck, log *slog.Logger) http.Handler {
-	h := &handler{ledger: ledger, ready: ready, log: log}
+func NewHandler(ledger Ledger, authn Authenticator, ready ReadinessCheck, log *slog.Logger) http.Handler {
+	h := &handler{ledger: ledger, authn: authn, ready: ready, log: log}
+
+	api := http.NewServeMux()
+	api.HandleFunc("POST /v1/accounts", withCaller(h.createAccount))
+	api.HandleFunc("GET /v1/accounts/{id}", withCaller(h.getAccount))
+	api.HandleFunc("POST /v1/accounts/{id}/deposits", withCaller(h.deposit))
+	api.HandleFunc("POST /v1/accounts/{id}/withdrawals", withCaller(h.withdraw))
+	api.HandleFunc("GET /v1/accounts/{id}/transactions", withCaller(h.listTransactions))
+	api.HandleFunc("POST /v1/transfers", withCaller(h.transfer))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("GET /readyz", h.readyz)
-	mux.HandleFunc("POST /v1/accounts", h.createAccount)
-	mux.HandleFunc("GET /v1/accounts/{id}", h.getAccount)
-	mux.HandleFunc("POST /v1/accounts/{id}/deposits", h.deposit)
-	mux.HandleFunc("POST /v1/accounts/{id}/withdrawals", h.withdraw)
-	mux.HandleFunc("GET /v1/accounts/{id}/transactions", h.listTransactions)
-	mux.HandleFunc("POST /v1/transfers", h.transfer)
+	// Everything under /v1/, including routes added later, requires a valid
+	// API key.
+	mux.Handle("/v1/", h.authenticate(api))
 
 	return withRequestID(withAccessLog(log, withRecovery(log, mux)))
 }
@@ -71,12 +78,12 @@ func (h *handler) readyz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, statusResponse{Status: "ready"})
 }
 
-func (h *handler) createAccount(w http.ResponseWriter, r *http.Request) {
+func (h *handler) createAccount(w http.ResponseWriter, r *http.Request, caller usecase.Principal) {
 	var req createAccountRequest
 	if !h.decode(w, r, &req) {
 		return
 	}
-	acc, replayed, err := h.ledger.CreateAccount(r.Context(), usecase.CreateAccountInput{
+	acc, replayed, err := h.ledger.CreateAccount(r.Context(), caller, usecase.CreateAccountInput{
 		IdempotencyKey: r.Header.Get(headerIdempotencyKey),
 		Name:           req.Name,
 		Currency:       req.Currency,
@@ -89,12 +96,12 @@ func (h *handler) createAccount(w http.ResponseWriter, r *http.Request) {
 	writeCreated(w, replayed, toAccountResponse(acc))
 }
 
-func (h *handler) getAccount(w http.ResponseWriter, r *http.Request) {
+func (h *handler) getAccount(w http.ResponseWriter, r *http.Request, caller usecase.Principal) {
 	id, ok := h.accountID(w, r)
 	if !ok {
 		return
 	}
-	acc, err := h.ledger.GetAccount(r.Context(), id)
+	acc, err := h.ledger.GetAccount(r.Context(), caller, id)
 	if err != nil {
 		h.writeError(w, r, err)
 		return
@@ -102,7 +109,8 @@ func (h *handler) getAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toAccountResponse(acc))
 }
 
-func (h *handler) deposit(w http.ResponseWriter, r *http.Request) {
+// deposit and withdraw are operator-only; the use cases enforce that.
+func (h *handler) deposit(w http.ResponseWriter, r *http.Request, caller usecase.Principal) {
 	id, ok := h.accountID(w, r)
 	if !ok {
 		return
@@ -111,15 +119,15 @@ func (h *handler) deposit(w http.ResponseWriter, r *http.Request) {
 	if !h.decode(w, r, &req) {
 		return
 	}
-	tx, replayed, err := h.ledger.Deposit(r.Context(), usecase.DepositInput{
+	tx, replayed, err := h.ledger.Deposit(r.Context(), caller, usecase.DepositInput{
 		IdempotencyKey: r.Header.Get(headerIdempotencyKey),
 		AccountID:      id,
 		Amount:         req.Amount,
 	})
-	h.writePosting(w, r, tx, replayed, err)
+	h.writePosting(w, r, tx, replayed, err, showAllBalances)
 }
 
-func (h *handler) withdraw(w http.ResponseWriter, r *http.Request) {
+func (h *handler) withdraw(w http.ResponseWriter, r *http.Request, caller usecase.Principal) {
 	id, ok := h.accountID(w, r)
 	if !ok {
 		return
@@ -128,29 +136,31 @@ func (h *handler) withdraw(w http.ResponseWriter, r *http.Request) {
 	if !h.decode(w, r, &req) {
 		return
 	}
-	tx, replayed, err := h.ledger.Withdraw(r.Context(), usecase.WithdrawInput{
+	tx, replayed, err := h.ledger.Withdraw(r.Context(), caller, usecase.WithdrawInput{
 		IdempotencyKey: r.Header.Get(headerIdempotencyKey),
 		AccountID:      id,
 		Amount:         req.Amount,
 	})
-	h.writePosting(w, r, tx, replayed, err)
+	h.writePosting(w, r, tx, replayed, err, showAllBalances)
 }
 
-func (h *handler) transfer(w http.ResponseWriter, r *http.Request) {
+func (h *handler) transfer(w http.ResponseWriter, r *http.Request, caller usecase.Principal) {
 	var req transferRequest
 	if !h.decode(w, r, &req) {
 		return
 	}
-	tx, replayed, err := h.ledger.Transfer(r.Context(), usecase.TransferInput{
+	tx, replayed, err := h.ledger.Transfer(r.Context(), caller, usecase.TransferInput{
 		IdempotencyKey: r.Header.Get(headerIdempotencyKey),
 		FromAccountID:  req.FromAccountID,
 		ToAccountID:    req.ToAccountID,
 		Amount:         req.Amount,
 	})
-	h.writePosting(w, r, tx, replayed, err)
+	// The payer owns the source account but not necessarily the destination,
+	// so the destination's balance is left out.
+	h.writePosting(w, r, tx, replayed, err, func(id uuid.UUID) bool { return id == req.FromAccountID })
 }
 
-func (h *handler) listTransactions(w http.ResponseWriter, r *http.Request) {
+func (h *handler) listTransactions(w http.ResponseWriter, r *http.Request, caller usecase.Principal) {
 	id, ok := h.accountID(w, r)
 	if !ok {
 		return
@@ -172,7 +182,7 @@ func (h *handler) listTransactions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page, err := h.ledger.ListTransactions(r.Context(), usecase.ListTransactionsInput{
+	page, err := h.ledger.ListTransactions(r.Context(), caller, usecase.ListTransactionsInput{
 		AccountID: id,
 		Cursor:    cursor,
 		Limit:     limit,
@@ -184,13 +194,15 @@ func (h *handler) listTransactions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toListTransactionsResponse(page))
 }
 
-func (h *handler) writePosting(w http.ResponseWriter, r *http.Request, tx domain.Transaction, replayed bool, err error) {
+func (h *handler) writePosting(w http.ResponseWriter, r *http.Request, tx domain.Transaction, replayed bool, err error, showBalance func(accountID uuid.UUID) bool) {
 	if err != nil {
 		h.writeError(w, r, err)
 		return
 	}
-	writeCreated(w, replayed, toTransactionResponse(tx))
+	writeCreated(w, replayed, toTransactionResponse(tx, showBalance))
 }
+
+func showAllBalances(uuid.UUID) bool { return true }
 
 func (h *handler) accountID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 	id, err := uuid.Parse(r.PathValue("id"))

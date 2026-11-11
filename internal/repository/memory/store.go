@@ -29,9 +29,13 @@ type state struct {
 	accounts     map[uuid.UUID]domain.Account
 	transactions map[uuid.UUID]domain.Transaction
 	entries      []entryRow
-	idempotency  map[string]usecase.IdempotencyRecord
+	idempotency  map[idempotencyKey]usecase.IdempotencyRecord
 	outbox       []outboxRow
 	lastEntryID  int64
+}
+
+type idempotencyKey struct {
+	clientID, key string
 }
 
 type entryRow struct {
@@ -52,7 +56,7 @@ func New() *Store {
 		committed: &state{
 			accounts:     map[uuid.UUID]domain.Account{},
 			transactions: map[uuid.UUID]domain.Transaction{},
-			idempotency:  map[string]usecase.IdempotencyRecord{},
+			idempotency:  map[idempotencyKey]usecase.IdempotencyRecord{},
 		},
 	}
 }
@@ -238,11 +242,12 @@ type idempotency struct{ s *Store }
 func (r idempotency) Reserve(_ context.Context, rec usecase.IdempotencyRecord) (usecase.IdempotencyRecord, bool, error) {
 	created := false
 	err := r.s.with(func(st *state) error {
-		if existing, ok := st.idempotency[rec.Key]; ok {
+		k := idempotencyKey{clientID: rec.ClientID, key: rec.Key}
+		if existing, ok := st.idempotency[k]; ok {
 			rec = existing
 			return nil
 		}
-		st.idempotency[rec.Key] = rec
+		st.idempotency[k] = rec
 		created = true
 		return nil
 	})

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -15,6 +16,10 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	LogLevel        slog.Level
 	LogFormat       string
+
+	// AuthAPIKeys lists the API key digests clients authenticate with, in
+	// the format described in package auth.
+	AuthAPIKeys string
 
 	DatabaseURL    string
 	DBMaxConns     int32
@@ -29,7 +34,8 @@ type Config struct {
 }
 
 // Load reads the configuration from the environment, applying defaults for
-// everything except DATABASE_URL. All problems are reported at once.
+// everything except DATABASE_URL and AUTH_API_KEYS. All problems are reported
+// at once.
 func Load() (Config, error) {
 	var errs []error
 	cfg := Config{
@@ -37,6 +43,7 @@ func Load() (Config, error) {
 		ShutdownTimeout:    parseVar("SHUTDOWN_TIMEOUT", 15*time.Second, time.ParseDuration, &errs),
 		LogLevel:           parseVar("LOG_LEVEL", slog.LevelInfo, parseLevel, &errs),
 		LogFormat:          stringVar("LOG_FORMAT", "json"),
+		AuthAPIKeys:        os.Getenv("AUTH_API_KEYS"),
 		DatabaseURL:        os.Getenv("DATABASE_URL"),
 		DBMaxConns:         parseVar("DB_MAX_CONNS", int32(10), parseInt32, &errs),
 		MigrateOnStart:     parseVar("MIGRATE_ON_START", true, strconv.ParseBool, &errs),
@@ -49,6 +56,9 @@ func Load() (Config, error) {
 
 	if cfg.DatabaseURL == "" {
 		errs = append(errs, errors.New("DATABASE_URL is required"))
+	}
+	if strings.TrimSpace(cfg.AuthAPIKeys) == "" {
+		errs = append(errs, errors.New("AUTH_API_KEYS is required (generate keys with `go run ./cmd/apikey`)"))
 	}
 	if cfg.LogFormat != "json" && cfg.LogFormat != "text" {
 		errs = append(errs, errors.New("LOG_FORMAT must be json or text"))

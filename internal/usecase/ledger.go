@@ -68,10 +68,13 @@ type TransactionPage struct {
 	NextCursor int64
 }
 
-// CreateAccount opens a customer account. replayed is true when the
-// idempotency key was already used for the same request, in which case the
-// previously created account is returned.
-func (l *Ledger) CreateAccount(ctx context.Context, in CreateAccountInput) (acc domain.Account, replayed bool, err error) {
+// CreateAccount opens a customer account owned by the caller. replayed is
+// true when the caller already used the idempotency key for the same request,
+// in which case the previously created account is returned.
+func (l *Ledger) CreateAccount(ctx context.Context, caller Principal, in CreateAccountInput) (acc domain.Account, replayed bool, err error) {
+	if err := requireCaller(caller); err != nil {
+		return domain.Account{}, false, err
+	}
 	if err := validateIdempotencyKey(in.IdempotencyKey); err != nil {
 		return domain.Account{}, false, err
 	}
@@ -80,14 +83,14 @@ func (l *Ledger) CreateAccount(ctx context.Context, in CreateAccountInput) (acc 
 		return domain.Account{}, false, err
 	}
 	now := l.now()
-	acc, err = domain.NewAccount(uuid.New(), in.Name, currency, now)
+	acc, err = domain.NewAccount(uuid.New(), caller.ClientID, in.Name, currency, now)
 	if err != nil {
 		return domain.Account{}, false, err
 	}
 	requestHash := fingerprint("create_account", acc.Name, acc.Currency)
 
 	err = l.store.InTx(ctx, func(tx Store) error {
-		id, fresh, err := reserveKey(ctx, tx, in.IdempotencyKey, requestHash, acc.ID)
+		id, fresh, err := reserveKey(ctx, tx, caller, in.IdempotencyKey, requestHash, acc.ID, now)
 		if err != nil {
 			return err
 		}
@@ -115,14 +118,29 @@ func (l *Ledger) CreateAccount(ctx context.Context, in CreateAccountInput) (acc 
 }
 
 // GetAccount returns a customer account including its current balance.
-func (l *Ledger) GetAccount(ctx context.Context, id uuid.UUID) (domain.Account, error) {
-	return l.store.Accounts().Get(ctx, id)
+// Accounts the caller may not read are reported as domain.ErrAccountNotFound.
+func (l *Ledger) GetAccount(ctx context.Context, caller Principal, id uuid.UUID) (domain.Account, error) {
+	if err := requireCaller(caller); err != nil {
+		return domain.Account{}, err
+	}
+	acc, err := l.store.Accounts().Get(ctx, id)
+	if err != nil {
+		return domain.Account{}, err
+	}
+	if !caller.canRead(acc) {
+		return domain.Account{}, domain.ErrAccountNotFound
+	}
+	return acc, nil
 }
 
-// Deposit adds money to an account.
-func (l *Ledger) Deposit(ctx context.Context, in DepositInput) (domain.Transaction, bool, error) {
+// Deposit adds money to any customer account. Only operators may deposit,
+// because a deposit brings new money into the ledger.
+func (l *Ledger) Deposit(ctx context.Context, caller Principal, in DepositInput) (domain.Transaction, bool, error) {
+	if err := requireOperator(caller); err != nil {
+		return domain.Transaction{}, false, err
+	}
 	requestHash := fingerprint("deposit", in.AccountID, in.Amount)
-	return l.post(ctx, in.IdempotencyKey, requestHash, in.Amount,
+	return l.post(ctx, caller, in.IdempotencyKey, requestHash, in.Amount,
 		func(ctx context.Context, tx Store, id uuid.UUID, now time.Time) (domain.Transaction, []domain.Account, error) {
 			acc, ext, err := lockWithExternal(ctx, tx, in.AccountID)
 			if err != nil {
@@ -133,10 +151,15 @@ func (l *Ledger) Deposit(ctx context.Context, in DepositInput) (domain.Transacti
 		})
 }
 
-// Withdraw takes money out of an account. The balance can never go negative.
-func (l *Ledger) Withdraw(ctx context.Context, in WithdrawInput) (domain.Transaction, bool, error) {
+// Withdraw takes money out of any customer account. The balance can never go
+// negative. Only operators may withdraw, because a withdrawal pays money out
+// of the ledger.
+func (l *Ledger) Withdraw(ctx context.Context, caller Principal, in WithdrawInput) (domain.Transaction, bool, error) {
+	if err := requireOperator(caller); err != nil {
+		return domain.Transaction{}, false, err
+	}
 	requestHash := fingerprint("withdraw", in.AccountID, in.Amount)
-	return l.post(ctx, in.IdempotencyKey, requestHash, in.Amount,
+	return l.post(ctx, caller, in.IdempotencyKey, requestHash, in.Amount,
 		func(ctx context.Context, tx Store, id uuid.UUID, now time.Time) (domain.Transaction, []domain.Account, error) {
 			acc, ext, err := lockWithExternal(ctx, tx, in.AccountID)
 			if err != nil {
@@ -147,10 +170,15 @@ func (l *Ledger) Withdraw(ctx context.Context, in WithdrawInput) (domain.Transac
 		})
 }
 
-// Transfer moves money between two accounts of the same currency.
-func (l *Ledger) Transfer(ctx context.Context, in TransferInput) (domain.Transaction, bool, error) {
+// Transfer moves money between two accounts of the same currency. The caller
+// must own the source account; this applies to operators too. The
+// destination can be any customer account.
+func (l *Ledger) Transfer(ctx context.Context, caller Principal, in TransferInput) (domain.Transaction, bool, error) {
+	if err := requireCaller(caller); err != nil {
+		return domain.Transaction{}, false, err
+	}
 	requestHash := fingerprint("transfer", in.FromAccountID, in.ToAccountID, in.Amount)
-	return l.post(ctx, in.IdempotencyKey, requestHash, in.Amount,
+	return l.post(ctx, caller, in.IdempotencyKey, requestHash, in.Amount,
 		func(ctx context.Context, tx Store, id uuid.UUID, now time.Time) (domain.Transaction, []domain.Account, error) {
 			locked, err := tx.Accounts().GetForUpdate(ctx, in.FromAccountID, in.ToAccountID)
 			if err != nil {
@@ -158,7 +186,9 @@ func (l *Ledger) Transfer(ctx context.Context, in TransferInput) (domain.Transac
 			}
 			from, okFrom := findAccount(locked, in.FromAccountID)
 			to, okTo := findAccount(locked, in.ToAccountID)
-			if !okFrom || !okTo {
+			// Checked before any balance rule so that a foreign source
+			// account looks exactly like a missing one.
+			if !okFrom || !from.OwnedBy(caller.ClientID) || !okTo {
 				return domain.Transaction{}, nil, domain.ErrAccountNotFound
 			}
 			t, err := domain.Transfer(id, &from, &to, in.Amount, now)
@@ -167,8 +197,12 @@ func (l *Ledger) Transfer(ctx context.Context, in TransferInput) (domain.Transac
 }
 
 // ListTransactions returns an account's statement, newest first, using
-// keyset pagination.
-func (l *Ledger) ListTransactions(ctx context.Context, in ListTransactionsInput) (TransactionPage, error) {
+// keyset pagination. Accounts the caller may not read are reported as
+// domain.ErrAccountNotFound.
+func (l *Ledger) ListTransactions(ctx context.Context, caller Principal, in ListTransactionsInput) (TransactionPage, error) {
+	if err := requireCaller(caller); err != nil {
+		return TransactionPage{}, err
+	}
 	limit := in.Limit
 	switch {
 	case limit <= 0:
@@ -181,7 +215,7 @@ func (l *Ledger) ListTransactions(ctx context.Context, in ListTransactionsInput)
 		before = math.MaxInt64
 	}
 
-	if _, err := l.store.Accounts().Get(ctx, in.AccountID); err != nil {
+	if _, err := l.GetAccount(ctx, caller, in.AccountID); err != nil {
 		return TransactionPage{}, err
 	}
 	lines, err := l.store.Transactions().ListByAccount(ctx, in.AccountID, before, limit+1)
@@ -200,10 +234,14 @@ func (l *Ledger) ListTransactions(ctx context.Context, in ListTransactionsInput)
 // and returns the transaction along with the updated accounts.
 type postFunc func(ctx context.Context, tx Store, id uuid.UUID, now time.Time) (domain.Transaction, []domain.Account, error)
 
-// post runs fn in a database transaction guarded by an idempotency key and
-// persists the result: new balances, the transaction with its entries and a
-// transaction.posted outbox event all commit atomically.
-func (l *Ledger) post(ctx context.Context, key, requestHash string, amount int64, fn postFunc) (t domain.Transaction, replayed bool, err error) {
+// post runs fn in a database transaction guarded by the caller's idempotency
+// key and persists the result: new balances, the transaction with its entries
+// and a transaction.posted outbox event all commit atomically.
+//
+// A replay returns the stored transaction without calling fn. That is safe
+// because keys are scoped per client and the request fingerprint covers the
+// account IDs, so only the caller that passed fn's checks can replay it.
+func (l *Ledger) post(ctx context.Context, caller Principal, key, requestHash string, amount int64, fn postFunc) (t domain.Transaction, replayed bool, err error) {
 	if err := validateIdempotencyKey(key); err != nil {
 		return domain.Transaction{}, false, err
 	}
@@ -212,7 +250,8 @@ func (l *Ledger) post(ctx context.Context, key, requestHash string, amount int64
 	}
 
 	err = l.store.InTx(ctx, func(tx Store) error {
-		id, fresh, err := reserveKey(ctx, tx, key, requestHash, uuid.New())
+		now := l.now()
+		id, fresh, err := reserveKey(ctx, tx, caller, key, requestHash, uuid.New(), now)
 		if err != nil {
 			return err
 		}
@@ -223,7 +262,7 @@ func (l *Ledger) post(ctx context.Context, key, requestHash string, amount int64
 		}
 
 		var accounts []domain.Account
-		if t, accounts, err = fn(ctx, tx, id, l.now()); err != nil {
+		if t, accounts, err = fn(ctx, tx, id, now); err != nil {
 			return err
 		}
 		if err := tx.Accounts().UpdateBalances(ctx, accounts...); err != nil {

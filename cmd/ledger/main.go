@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/yohadrian21/go-ledger-service/internal/auth"
 	"github.com/yohadrian21/go-ledger-service/internal/config"
 	"github.com/yohadrian21/go-ledger-service/internal/delivery/httpapi"
 	"github.com/yohadrian21/go-ledger-service/internal/messaging/rabbitmq"
@@ -40,7 +41,12 @@ func run() error {
 	log := newLogger(cfg)
 	slog.SetDefault(log)
 
-	log.Info("starting ledger service", "addr", cfg.HTTPAddr, "exchange", cfg.AMQPExchange)
+	authn, err := auth.ParseAPIKeys(cfg.AuthAPIKeys)
+	if err != nil {
+		return fmt.Errorf("load config: AUTH_API_KEYS: %w", err)
+	}
+
+	log.Info("starting ledger service", "addr", cfg.HTTPAddr, "exchange", cfg.AMQPExchange, "api_keys", authn.Len())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -66,7 +72,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewHandler(usecase.NewLedger(store), ready, log),
+		Handler:           httpapi.NewHandler(usecase.NewLedger(store), authn, ready, log),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      30 * time.Second,

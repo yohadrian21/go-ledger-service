@@ -40,7 +40,7 @@ func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Disca
 func TestOutboxRelayPublishesPendingEvents(t *testing.T) {
 	ctx := context.Background()
 	l, store := newLedger(t)
-	acc := mustCreateAccount(t, l, "USD")
+	acc := mustCreateAccount(t, l, clientA, "USD")
 	mustDeposit(t, l, acc.ID, 100)
 
 	pub := &fakePublisher{failAfter: -1}
@@ -65,7 +65,7 @@ func TestOutboxRelayPublishesPendingEvents(t *testing.T) {
 func TestOutboxRelayKeepsUnpublishedEventsOnFailure(t *testing.T) {
 	ctx := context.Background()
 	l, store := newLedger(t)
-	acc := mustCreateAccount(t, l, "USD")
+	acc := mustCreateAccount(t, l, clientA, "USD")
 	mustDeposit(t, l, acc.ID, 100)
 	mustDeposit(t, l, acc.ID, 200)
 
@@ -91,7 +91,7 @@ func TestOutboxRelayKeepsUnpublishedEventsOnFailure(t *testing.T) {
 
 func TestOutboxRelayRunDrainsBacklogAndStops(t *testing.T) {
 	l, store := newLedger(t)
-	acc := mustCreateAccount(t, l, "USD")
+	acc := mustCreateAccount(t, l, clientA, "USD")
 	for range 4 {
 		mustDeposit(t, l, acc.ID, 1)
 	}

@@ -35,11 +35,11 @@ func TestOutboxRelayPublishesToRabbitMQ(t *testing.T) {
 	store := postgres.NewStore(pool)
 	ledger := usecase.NewLedger(store)
 
-	acc, _, err := ledger.CreateAccount(ctx, usecase.CreateAccountInput{IdempotencyKey: "acc", Name: "Alice", Currency: "USD"})
+	acc, _, err := ledger.CreateAccount(ctx, usecase.Principal{ClientID: "client", Role: usecase.RoleClient}, usecase.CreateAccountInput{IdempotencyKey: "acc", Name: "Alice", Currency: "USD"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	dep, _, err := ledger.Deposit(ctx, usecase.DepositInput{IdempotencyKey: "dep", AccountID: acc.ID, Amount: 500})
+	dep, _, err := ledger.Deposit(ctx, usecase.Principal{ClientID: "operator", Role: usecase.RoleOperator}, usecase.DepositInput{IdempotencyKey: "dep", AccountID: acc.ID, Amount: 500})
 	if err != nil {
 		t.Fatal(err)
 	}

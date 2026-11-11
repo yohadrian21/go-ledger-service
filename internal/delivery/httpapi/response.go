@@ -39,6 +39,7 @@ var errorMappings = []struct {
 	{usecase.ErrIdempotencyKeyMissing, http.StatusBadRequest, "idempotency_key_missing"},
 	{usecase.ErrIdempotencyKeyInvalid, http.StatusBadRequest, "idempotency_key_invalid"},
 	{usecase.ErrIdempotencyKeyReused, http.StatusUnprocessableEntity, "idempotency_key_reused"},
+	{usecase.ErrForbidden, http.StatusForbidden, "forbidden"},
 }
 
 func (h *handler) writeError(w http.ResponseWriter, r *http.Request, err error) {

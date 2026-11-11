@@ -15,7 +15,7 @@ var now = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 
 func customer(t *testing.T, currency Currency, balance int64) Account {
 	t.Helper()
-	a, err := NewAccount(uuid.New(), "test", currency, now)
+	a, err := NewAccount(uuid.New(), "owner", "test", currency, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,22 +35,38 @@ func assertBalanced(t *testing.T, tx Transaction) {
 }
 
 func TestNewAccount(t *testing.T) {
-	a, err := NewAccount(uuid.New(), "  Alice  ", "USD", now)
+	a, err := NewAccount(uuid.New(), "acme", "  Alice  ", "USD", now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Name != "Alice" || a.Balance != 0 || a.Kind != AccountKindCustomer {
+	if a.Name != "Alice" || a.OwnerID != "acme" || a.Balance != 0 || a.Kind != AccountKindCustomer {
 		t.Fatalf("unexpected account: %+v", a)
 	}
 
-	if _, err := NewAccount(uuid.New(), " ", "USD", now); !errors.Is(err, ErrInvalidAccountName) {
+	if _, err := NewAccount(uuid.New(), "", "Alice", "USD", now); !errors.Is(err, ErrAccountOwnerRequired) {
+		t.Fatalf("missing owner: got %v", err)
+	}
+	if _, err := NewAccount(uuid.New(), "acme", " ", "USD", now); !errors.Is(err, ErrInvalidAccountName) {
 		t.Fatalf("blank name: got %v", err)
 	}
-	if _, err := NewAccount(uuid.New(), strings.Repeat("x", 101), "USD", now); !errors.Is(err, ErrInvalidAccountName) {
+	if _, err := NewAccount(uuid.New(), "acme", strings.Repeat("x", 101), "USD", now); !errors.Is(err, ErrInvalidAccountName) {
 		t.Fatalf("long name: got %v", err)
 	}
-	if _, err := NewAccount(uuid.New(), "Bob", "usd", now); !errors.Is(err, ErrInvalidCurrency) {
+	if _, err := NewAccount(uuid.New(), "acme", "Bob", "usd", now); !errors.Is(err, ErrInvalidCurrency) {
 		t.Fatalf("lower-case currency: got %v", err)
+	}
+}
+
+func TestAccountOwnedBy(t *testing.T) {
+	a, err := NewAccount(uuid.New(), "acme", "Alice", "USD", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.OwnedBy("acme") || a.OwnedBy("other") || a.OwnedBy("") {
+		t.Fatal("OwnedBy must match only the owning client")
+	}
+	if NewExternalAccount(uuid.New(), "USD", now).OwnedBy("") {
+		t.Fatal("an empty client id must not own an account without owner")
 	}
 }
 

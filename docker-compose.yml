@@ -8,6 +8,8 @@ services:
       AMQP_URL: amqp://ledger:ledger@rabbitmq:5672/
       AMQP_QUEUE: ledger.events.audit
       LOG_LEVEL: info
+      # Digests of the local API keys, read from .env (run `make dev-env`).
+      AUTH_API_KEYS: ${AUTH_API_KEYS:-}
     ports:
       - "8080:8080"
     depends_on:
