@@ -43,7 +43,7 @@ type accountResponse struct {
 type entryResponse struct {
 	AccountID    uuid.UUID `json:"account_id"`
 	Amount       int64     `json:"amount"`
-	BalanceAfter int64     `json:"balance_after"`
+	BalanceAfter *int64    `json:"balance_after,omitempty"`
 }
 
 type transactionResponse struct {
@@ -80,10 +80,15 @@ func toAccountResponse(a domain.Account) accountResponse {
 	}
 }
 
-func toTransactionResponse(t domain.Transaction) transactionResponse {
+// toTransactionResponse includes an entry's balance_after only if
+// showBalance allows it for the entry's account.
+func toTransactionResponse(t domain.Transaction, showBalance func(accountID uuid.UUID) bool) transactionResponse {
 	entries := make([]entryResponse, len(t.Entries))
 	for i, e := range t.Entries {
-		entries[i] = entryResponse(e)
+		entries[i] = entryResponse{AccountID: e.AccountID, Amount: e.Amount}
+		if showBalance(e.AccountID) {
+			entries[i].BalanceAfter = &e.BalanceAfter
+		}
 	}
 	return transactionResponse{
 		ID:        t.ID,

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -36,18 +37,21 @@ func fingerprint(operation string, fields ...any) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// reserveKey claims key for a new resource inside tx. Because the key is
-// written in the same transaction as the ledger changes, either both commit
-// or neither does: a request that fails leaves the key unused, and a request
-// that succeeded can never be applied twice.
+// reserveKey claims the caller's key for a new resource inside tx. Because
+// the key is written in the same transaction as the ledger changes, either
+// both commit or neither does: a request that fails leaves the key unused,
+// and a request that succeeded can never be applied twice.
 //
-// If the key is already taken by the same request, the ID of the resource it
-// created is returned with fresh=false.
-func reserveKey(ctx context.Context, tx Store, key, requestHash string, newID uuid.UUID) (id uuid.UUID, fresh bool, err error) {
+// If the caller already used the key for the same request, the ID of the
+// resource it created is returned with fresh=false. Keys of other clients are
+// never visible.
+func reserveKey(ctx context.Context, tx Store, caller Principal, key, requestHash string, newID uuid.UUID, now time.Time) (id uuid.UUID, fresh bool, err error) {
 	rec, created, err := tx.Idempotency().Reserve(ctx, IdempotencyRecord{
+		ClientID:    caller.ClientID,
 		Key:         key,
 		RequestHash: requestHash,
 		ResourceID:  newID,
+		CreatedAt:   now,
 	})
 	if err != nil {
 		return uuid.Nil, false, err

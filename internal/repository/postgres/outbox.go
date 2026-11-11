@@ -47,3 +47,16 @@ func (r outboxRepo) MarkPublished(ctx context.Context, ids []uuid.UUID, at time.
 	_, err := r.db.Exec(ctx, `UPDATE outbox_events SET published_at = $2 WHERE id = ANY($1)`, ids, at)
 	return err
 }
+
+func (r outboxRepo) DeletePublished(ctx context.Context, publishedBefore time.Time, limit int) (int, error) {
+	tag, err := r.db.Exec(ctx,
+		`DELETE FROM outbox_events WHERE id IN (
+		   SELECT id FROM outbox_events
+		   WHERE published_at < $1
+		   LIMIT $2
+		   FOR UPDATE SKIP LOCKED)`, publishedBefore, limit)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}

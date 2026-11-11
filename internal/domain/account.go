@@ -28,8 +28,12 @@ const (
 // projection of the account's ledger entries and is only changed by posting a
 // Transaction.
 type Account struct {
-	ID        uuid.UUID
-	Name      string
+	ID   uuid.UUID
+	Name string
+	// OwnerID is the API client that opened the account. It never changes.
+	// External accounts have no owner, and neither do customer accounts
+	// opened before accounts had owners.
+	OwnerID   string
 	Currency  Currency
 	Kind      AccountKind
 	Balance   int64
@@ -37,8 +41,12 @@ type Account struct {
 	UpdatedAt time.Time
 }
 
-// NewAccount validates the input and returns a customer account with a zero balance.
-func NewAccount(id uuid.UUID, name string, currency Currency, now time.Time) (Account, error) {
+// NewAccount validates the input and returns a customer account owned by
+// ownerID with a zero balance.
+func NewAccount(id uuid.UUID, ownerID, name string, currency Currency, now time.Time) (Account, error) {
+	if ownerID == "" {
+		return Account{}, ErrAccountOwnerRequired
+	}
 	name = strings.TrimSpace(name)
 	if name == "" || utf8.RuneCountInString(name) > maxAccountNameLength {
 		return Account{}, ErrInvalidAccountName
@@ -49,11 +57,18 @@ func NewAccount(id uuid.UUID, name string, currency Currency, now time.Time) (Ac
 	return Account{
 		ID:        id,
 		Name:      name,
+		OwnerID:   ownerID,
 		Currency:  currency,
 		Kind:      AccountKindCustomer,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, nil
+}
+
+// OwnedBy reports whether clientID owns the account. An empty clientID never
+// owns anything, including accounts without an owner.
+func (a Account) OwnedBy(clientID string) bool {
+	return clientID != "" && a.OwnerID == clientID
 }
 
 // NewExternalAccount returns the external account for currency.

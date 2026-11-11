@@ -13,6 +13,7 @@ var (
 	ErrInvalidAmount         = errors.New("amount must be a positive integer in minor units")
 	ErrInvalidCurrency       = errors.New("currency must be a 3-letter ISO 4217 code")
 	ErrInvalidAccountName    = errors.New("account name must be 1-100 characters")
+	ErrAccountOwnerRequired  = errors.New("customer accounts must have an owner")
 	ErrBalanceOverflow       = errors.New("balance would overflow")
 	ErrUnbalancedTransaction = errors.New("transaction entries must sum to zero")
 )

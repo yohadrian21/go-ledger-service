@@ -15,6 +15,12 @@ import (
 	"github.com/yohadrian21/go-ledger-service/internal/usecase"
 )
 
+var (
+	// client owns the accounts created by createAccount.
+	client   = usecase.Principal{ClientID: "client", Role: usecase.RoleClient}
+	operator = usecase.Principal{ClientID: "operator", Role: usecase.RoleOperator}
+)
+
 func newLedger(t *testing.T) (*usecase.Ledger, *pgxpool.Pool) {
 	t.Helper()
 	pool := pgtest.New(t)
@@ -23,7 +29,7 @@ func newLedger(t *testing.T) (*usecase.Ledger, *pgxpool.Pool) {
 
 func createAccount(t *testing.T, l *usecase.Ledger, currency string) domain.Account {
 	t.Helper()
-	acc, _, err := l.CreateAccount(context.Background(), usecase.CreateAccountInput{
+	acc, _, err := l.CreateAccount(context.Background(), client, usecase.CreateAccountInput{
 		IdempotencyKey: uuid.NewString(), Name: "test " + currency, Currency: currency,
 	})
 	if err != nil {
@@ -34,7 +40,7 @@ func createAccount(t *testing.T, l *usecase.Ledger, currency string) domain.Acco
 
 func deposit(t *testing.T, l *usecase.Ledger, id uuid.UUID, amount int64) domain.Transaction {
 	t.Helper()
-	tx, _, err := l.Deposit(context.Background(), usecase.DepositInput{
+	tx, _, err := l.Deposit(context.Background(), operator, usecase.DepositInput{
 		IdempotencyKey: uuid.NewString(), AccountID: id, Amount: amount,
 	})
 	if err != nil {
@@ -45,7 +51,7 @@ func deposit(t *testing.T, l *usecase.Ledger, id uuid.UUID, amount int64) domain
 
 func balanceOf(t *testing.T, l *usecase.Ledger, id uuid.UUID) int64 {
 	t.Helper()
-	acc, err := l.GetAccount(context.Background(), id)
+	acc, err := l.GetAccount(context.Background(), client, id)
 	if err != nil {
 		t.Fatalf("get account: %v", err)
 	}

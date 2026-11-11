@@ -39,6 +39,7 @@ var errorMappings = []struct {
 	{usecase.ErrIdempotencyKeyMissing, http.StatusBadRequest, "idempotency_key_missing"},
 	{usecase.ErrIdempotencyKeyInvalid, http.StatusBadRequest, "idempotency_key_invalid"},
 	{usecase.ErrIdempotencyKeyReused, http.StatusUnprocessableEntity, "idempotency_key_reused"},
+	{usecase.ErrForbidden, http.StatusForbidden, "forbidden"},
 }
 
 func (h *handler) writeError(w http.ResponseWriter, r *http.Request, err error) {
@@ -53,7 +54,9 @@ func (h *handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 }
 
 // decode reads a single JSON object into dst and rejects unknown fields. It
-// writes an error response and returns false if the body is invalid.
+// writes an error response and returns false if the body is invalid. The
+// decoder's error text is only logged: it can quote parts of the request and
+// reveals internal type names.
 func (h *handler) decode(w http.ResponseWriter, r *http.Request, dst any) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	dec.DisallowUnknownFields()
@@ -70,7 +73,8 @@ func (h *handler) decode(w http.ResponseWriter, r *http.Request, dst any) bool {
 		writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body is too large")
 		return false
 	}
-	writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body: "+err.Error())
+	h.log.DebugContext(r.Context(), "invalid request body", "error", err, "request_id", requestIDFrom(r.Context()))
+	writeError(w, http.StatusBadRequest, "invalid_request", "request body is not valid JSON for this endpoint")
 	return false
 }
 

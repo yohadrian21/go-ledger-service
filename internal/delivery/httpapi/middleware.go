@@ -56,11 +56,28 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 
 func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
-// withAccessLog writes one structured log line per request. Probe requests
-// are logged at debug level to keep the logs readable.
+// accessLogFields carries values that inner handlers learn about a request,
+// such as the authenticated client, out to the access log.
+type accessLogFields struct {
+	clientID string
+}
+
+type accessLogKey struct{}
+
+func setAccessLogClientID(ctx context.Context, clientID string) {
+	if f, ok := ctx.Value(accessLogKey{}).(*accessLogFields); ok {
+		f.clientID = clientID
+	}
+}
+
+// withAccessLog writes one structured log line per request, including the
+// authenticated client if there is one. Probe requests are logged at debug
+// level to keep the logs readable.
 func withAccessLog(log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		fields := &accessLogFields{}
+		r = r.WithContext(context.WithValue(r.Context(), accessLogKey{}, fields))
 		rec := &statusRecorder{ResponseWriter: w}
 		next.ServeHTTP(rec, r)
 
@@ -74,13 +91,17 @@ func withAccessLog(log *slog.Logger, next http.Handler) http.Handler {
 		case r.URL.Path == "/healthz" || r.URL.Path == "/readyz":
 			level = slog.LevelDebug
 		}
-		log.LogAttrs(r.Context(), level, "http request",
+		attrs := []slog.Attr{
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.Int("status", rec.status),
 			slog.Float64("duration_ms", float64(time.Since(start).Microseconds())/1000),
 			slog.String("request_id", requestIDFrom(r.Context())),
-		)
+		}
+		if fields.clientID != "" {
+			attrs = append(attrs, slog.String("client_id", fields.clientID))
+		}
+		log.LogAttrs(r.Context(), level, "http request", attrs...)
 	})
 }
 

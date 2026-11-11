@@ -11,17 +11,23 @@ import (
 	"github.com/yohadrian21/go-ledger-service/internal/domain"
 )
 
-const accountColumns = `id, name, currency, kind, balance, created_at, updated_at`
+const accountColumns = `id, name, owner_id, currency, kind, balance, created_at, updated_at`
 
 type accountRepo struct {
 	db DBTX
 }
 
 func scanAccount(row pgx.Row) (domain.Account, error) {
-	var a domain.Account
-	err := row.Scan(&a.ID, &a.Name, &a.Currency, &a.Kind, &a.Balance, &a.CreatedAt, &a.UpdatedAt)
+	var (
+		a     domain.Account
+		owner *string
+	)
+	err := row.Scan(&a.ID, &a.Name, &owner, &a.Currency, &a.Kind, &a.Balance, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Account{}, domain.ErrAccountNotFound
+	}
+	if owner != nil {
+		a.OwnerID = *owner
 	}
 	a.CreatedAt, a.UpdatedAt = a.CreatedAt.UTC(), a.UpdatedAt.UTC()
 	return a, err
@@ -29,14 +35,14 @@ func scanAccount(row pgx.Row) (domain.Account, error) {
 
 func (r accountRepo) Create(ctx context.Context, a domain.Account) error {
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO accounts (`+accountColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		a.ID, a.Name, a.Currency, a.Kind, a.Balance, a.CreatedAt, a.UpdatedAt)
+		`INSERT INTO accounts (`+accountColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		a.ID, a.Name, a.OwnerID, a.Currency, a.Kind, a.Balance, a.CreatedAt, a.UpdatedAt)
 	return err
 }
 
 func (r accountRepo) EnsureExternal(ctx context.Context, a domain.Account) error {
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO accounts (`+accountColumns+`) VALUES ($1, $2, $3, 'external', $4, $5, $6)
+		`INSERT INTO accounts (`+accountColumns+`) VALUES ($1, $2, NULL, $3, 'external', $4, $5, $6)
 		 ON CONFLICT (currency) WHERE kind = 'external' DO NOTHING`,
 		a.ID, a.Name, a.Currency, a.Balance, a.CreatedAt, a.UpdatedAt)
 	return err

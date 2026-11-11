@@ -35,7 +35,7 @@ func TestConcurrentTransfersDoNotDoubleSpend(t *testing.T) {
 	for range workers {
 		wg.Go(func() {
 			<-start
-			_, _, err := l.Transfer(ctx, usecase.TransferInput{
+			_, _, err := l.Transfer(ctx, client, usecase.TransferInput{
 				IdempotencyKey: uuid.NewString(),
 				FromAccountID:  alice.ID,
 				ToAccountID:    bob.ID,
@@ -95,7 +95,7 @@ func TestConcurrentOpposingTransfersDoNotDeadlock(t *testing.T) {
 
 		wg.Go(func() {
 			<-start
-			_, _, err := l.Transfer(ctx, usecase.TransferInput{
+			_, _, err := l.Transfer(ctx, client, usecase.TransferInput{
 				IdempotencyKey: uuid.NewString(),
 				FromAccountID:  ids[from],
 				ToAccountID:    ids[to],
@@ -139,7 +139,7 @@ func TestConcurrentRetriesWithSameIdempotencyKeyPostOnce(t *testing.T) {
 	for range workers {
 		wg.Go(func() {
 			<-start
-			tx, isReplay, err := l.Deposit(ctx, in)
+			tx, isReplay, err := l.Deposit(ctx, operator, in)
 			if err != nil {
 				t.Errorf("deposit: %v", err)
 				return
