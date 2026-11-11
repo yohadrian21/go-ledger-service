@@ -10,9 +10,26 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+// Environments. Only development allows default credentials and fallbacks.
+const (
+	EnvDevelopment = "development"
+	EnvStaging     = "staging"
+	EnvProduction  = "production"
+)
+
+// defaultPasswords are the well-known credentials of the local compose stack
+// and RabbitMQ. They are rejected outside development.
+var defaultPasswords = map[string]bool{"guest": true, "ledger": true}
+
 type Config struct {
+	// Env is development, staging or production (the default).
+	Env string
+
 	HTTPAddr        string
 	ShutdownTimeout time.Duration
 	LogLevel        slog.Level
@@ -41,11 +58,13 @@ type Config struct {
 }
 
 // Load reads the configuration from the environment, applying defaults for
-// everything except DATABASE_URL and AUTH_API_KEYS. All problems are reported
-// at once.
+// everything except DATABASE_URL and AUTH_API_KEYS. Outside development,
+// AMQP_URL is required too and default credentials are rejected. All
+// problems are reported at once.
 func Load() (Config, error) {
 	var errs []error
 	cfg := Config{
+		Env:                stringVar("APP_ENV", EnvProduction),
 		HTTPAddr:           stringVar("HTTP_ADDR", ":8080"),
 		ShutdownTimeout:    parseVar("SHUTDOWN_TIMEOUT", 15*time.Second, time.ParseDuration, &errs),
 		LogLevel:           parseVar("LOG_LEVEL", slog.LevelInfo, parseLevel, &errs),
@@ -56,7 +75,7 @@ func Load() (Config, error) {
 		DatabaseURL:        os.Getenv("DATABASE_URL"),
 		DBMaxConns:         parseVar("DB_MAX_CONNS", int32(10), parseInt32, &errs),
 		MigrateOnStart:     parseVar("MIGRATE_ON_START", true, strconv.ParseBool, &errs),
-		AMQPURL:            stringVar("AMQP_URL", "amqp://guest:guest@localhost:5672/"),
+		AMQPURL:            os.Getenv("AMQP_URL"),
 		AMQPExchange:       stringVar("AMQP_EXCHANGE", "ledger.events"),
 		AMQPQueue:          os.Getenv("AMQP_QUEUE"),
 		OutboxPollInterval: parseVar("OUTBOX_POLL_INTERVAL", time.Second, time.ParseDuration, &errs),
@@ -66,6 +85,16 @@ func Load() (Config, error) {
 		CleanupInterval:    parseVar("CLEANUP_INTERVAL", 15*time.Minute, time.ParseDuration, &errs),
 	}
 
+	switch cfg.Env {
+	case EnvDevelopment:
+		if cfg.AMQPURL == "" {
+			cfg.AMQPURL = "amqp://guest:guest@localhost:5672/"
+		}
+	case EnvStaging, EnvProduction:
+		errs = append(errs, checkCredentials(cfg)...)
+	default:
+		errs = append(errs, fmt.Errorf("APP_ENV must be %s, %s or %s", EnvDevelopment, EnvStaging, EnvProduction))
+	}
 	if cfg.DatabaseURL == "" {
 		errs = append(errs, errors.New("DATABASE_URL is required"))
 	}
@@ -103,6 +132,30 @@ func Load() (Config, error) {
 		errs = append(errs, errors.New("CLEANUP_INTERVAL must be positive"))
 	}
 	return cfg, errors.Join(errs...)
+}
+
+// checkCredentials makes sure that the broker and database credentials were
+// set explicitly and are not the well-known defaults. It looks at the
+// effective credentials, so the guest account that the AMQP client falls
+// back to when a URL has none is caught too.
+func checkCredentials(cfg Config) []error {
+	var errs []error
+	if cfg.AMQPURL == "" {
+		errs = append(errs, fmt.Errorf("AMQP_URL is required when APP_ENV=%s", cfg.Env))
+	} else if uri, err := amqp.ParseURI(cfg.AMQPURL); err != nil {
+		errs = append(errs, errors.New("AMQP_URL: invalid URL"))
+	} else if uri.Username == "guest" || defaultPasswords[uri.Password] {
+		errs = append(errs, fmt.Errorf("AMQP_URL: set explicit, non-default credentials when APP_ENV=%s", cfg.Env))
+	}
+
+	if cfg.DatabaseURL != "" {
+		if pg, err := pgconn.ParseConfig(cfg.DatabaseURL); err != nil {
+			errs = append(errs, errors.New("DATABASE_URL: invalid connection string"))
+		} else if defaultPasswords[pg.Password] {
+			errs = append(errs, fmt.Errorf("DATABASE_URL: set non-default credentials when APP_ENV=%s", cfg.Env))
+		}
+	}
+	return errs
 }
 
 func stringVar(name, def string) string {

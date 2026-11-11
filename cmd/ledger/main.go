@@ -46,7 +46,7 @@ func run() error {
 		return fmt.Errorf("load config: AUTH_API_KEYS: %w", err)
 	}
 
-	log.Info("starting ledger service", "addr", cfg.HTTPAddr, "exchange", cfg.AMQPExchange, "api_keys", authn.Len())
+	log.Info("starting ledger service", "env", cfg.Env, "addr", cfg.HTTPAddr, "exchange", cfg.AMQPExchange, "api_keys", authn.Len())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

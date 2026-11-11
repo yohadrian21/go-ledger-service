@@ -15,8 +15,8 @@ build: ## Build the binary into ./bin
 	CGO_ENABLED=0 go build -trimpath -o bin/ledger ./cmd/ledger
 
 run: check-env deps-up ## Run the service locally against the compose dependencies
-	DATABASE_URL='$(LOCAL_DATABASE_URL)' AMQP_URL='$(LOCAL_AMQP_URL)' AMQP_QUEUE=ledger.events.audit LOG_FORMAT=text \
-		AUTH_API_KEYS='$(AUTH_API_KEYS)' go run ./cmd/ledger
+	APP_ENV=development DATABASE_URL='$(LOCAL_DATABASE_URL)' AMQP_URL='$(LOCAL_AMQP_URL)' AMQP_QUEUE=ledger.events.audit \
+		LOG_FORMAT=text AUTH_API_KEYS='$(AUTH_API_KEYS)' go run ./cmd/ledger
 
 dev-env: ## Create a gitignored .env with random API keys for local development
 	@test ! -e .env || { echo ".env already exists; delete it to generate new keys"; exit 1; }

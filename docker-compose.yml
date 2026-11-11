@@ -1,9 +1,14 @@
+# Local development stack. The ledger/ledger credentials and sslmode=disable
+# are for this stack only: every port is published on 127.0.0.1, and the app
+# runs with APP_ENV=development, the only mode that accepts default
+# credentials. Do not deploy this file.
 name: go-ledger-service
 
 services:
   app:
     build: .
     environment:
+      APP_ENV: development
       DATABASE_URL: postgres://ledger:ledger@postgres:5432/ledger?sslmode=disable
       AMQP_URL: amqp://ledger:ledger@rabbitmq:5672/
       AMQP_QUEUE: ledger.events.audit
@@ -11,7 +16,7 @@ services:
       # Digests of the local API keys, read from .env (run `make dev-env`).
       AUTH_API_KEYS: ${AUTH_API_KEYS:-}
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -26,7 +31,7 @@ services:
       POSTGRES_PASSWORD: ledger
       POSTGRES_DB: ledger
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -41,8 +46,8 @@ services:
       RABBITMQ_DEFAULT_USER: ledger
       RABBITMQ_DEFAULT_PASS: ledger
     ports:
-      - "5672:5672"
-      - "15672:15672" # management UI
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672" # management UI
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
