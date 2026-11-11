@@ -44,8 +44,8 @@ type entryRow struct {
 }
 
 type outboxRow struct {
-	event     domain.Event
-	published bool
+	event       domain.Event
+	publishedAt time.Time // zero while pending
 }
 
 var _ usecase.Store = (*Store)(nil)
@@ -254,6 +254,23 @@ func (r idempotency) Reserve(_ context.Context, rec usecase.IdempotencyRecord) (
 	return rec, created, err
 }
 
+func (r idempotency) DeleteExpired(_ context.Context, createdBefore time.Time, limit int) (int, error) {
+	deleted := 0
+	err := r.s.with(func(st *state) error {
+		for k, rec := range st.idempotency {
+			if deleted == limit {
+				break
+			}
+			if rec.CreatedAt.Before(createdBefore) {
+				delete(st.idempotency, k)
+				deleted++
+			}
+		}
+		return nil
+	})
+	return deleted, err
+}
+
 type outbox struct{ s *Store }
 
 func (r outbox) Add(_ context.Context, events ...domain.Event) error {
@@ -272,7 +289,7 @@ func (r outbox) FetchPending(_ context.Context, limit int) ([]domain.Event, erro
 			if len(out) == limit {
 				break
 			}
-			if !row.published {
+			if row.publishedAt.IsZero() {
 				out = append(out, row.event)
 			}
 		}
@@ -281,13 +298,28 @@ func (r outbox) FetchPending(_ context.Context, limit int) ([]domain.Event, erro
 	return out, err
 }
 
-func (r outbox) MarkPublished(_ context.Context, ids []uuid.UUID, _ time.Time) error {
+func (r outbox) MarkPublished(_ context.Context, ids []uuid.UUID, at time.Time) error {
 	return r.s.with(func(st *state) error {
 		for i := range st.outbox {
 			if slices.Contains(ids, st.outbox[i].event.ID) {
-				st.outbox[i].published = true
+				st.outbox[i].publishedAt = at
 			}
 		}
 		return nil
 	})
+}
+
+func (r outbox) DeletePublished(_ context.Context, publishedBefore time.Time, limit int) (int, error) {
+	deleted := 0
+	err := r.s.with(func(st *state) error {
+		st.outbox = slices.DeleteFunc(st.outbox, func(row outboxRow) bool {
+			if deleted == limit || row.publishedAt.IsZero() || !row.publishedAt.Before(publishedBefore) {
+				return false
+			}
+			deleted++
+			return true
+		})
+		return nil
+	})
+	return deleted, err
 }

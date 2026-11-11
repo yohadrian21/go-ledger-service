@@ -244,6 +244,64 @@ func TestDatabaseRejectsUnbalancedTransaction(t *testing.T) {
 	}
 }
 
+func TestRetentionDeletesOnlyExpiredRows(t *testing.T) {
+	ctx := context.Background()
+	l, pool := newLedger(t)
+	store := postgres.NewStore(pool)
+	acc := createAccount(t, l, "USD")
+	in := usecase.DepositInput{IdempotencyKey: "dep", AccountID: acc.ID, Amount: 100}
+	if _, _, err := l.Deposit(ctx, operator, in); err != nil {
+		t.Fatal(err)
+	}
+
+	count := func(query string) int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, query).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	now := time.Now()
+
+	if n, err := store.Idempotency().DeleteExpired(ctx, now.Add(-time.Hour), 100); err != nil || n != 0 {
+		t.Fatalf("DeleteExpired(1h ago) = %d, %v; want 0", n, err)
+	}
+	if n, err := store.Idempotency().DeleteExpired(ctx, now.Add(time.Hour), 1); err != nil || n != 1 {
+		t.Fatalf("DeleteExpired with limit 1 = %d, %v; want 1", n, err)
+	}
+	if n, err := store.Idempotency().DeleteExpired(ctx, now.Add(time.Hour), 100); err != nil || n != 1 {
+		t.Fatalf("DeleteExpired = %d, %v; want the remaining key", n, err)
+	}
+	if _, replayed, err := l.Deposit(ctx, operator, in); err != nil || replayed {
+		t.Fatalf("deposit with an expired key: replayed=%v err=%v; want a new posting", replayed, err)
+	}
+
+	err := store.InTx(ctx, func(tx usecase.Store) error {
+		events, err := tx.Outbox().FetchPending(ctx, 2)
+		if err != nil {
+			return err
+		}
+		return tx.Outbox().MarkPublished(ctx, []uuid.UUID{events[0].ID, events[1].ID}, now.Add(-48*time.Hour))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := store.Outbox().DeletePublished(ctx, now.Add(-72*time.Hour), 100); err != nil || n != 0 {
+		t.Fatalf("DeletePublished(72h ago) = %d, %v; want 0", n, err)
+	}
+	if n, err := store.Outbox().DeletePublished(ctx, now.Add(time.Hour), 100); err != nil || n != 2 {
+		t.Fatalf("DeletePublished = %d, %v; want 2", n, err)
+	}
+	if pending := count(`SELECT count(*) FROM outbox_events WHERE published_at IS NULL`); pending != 1 {
+		t.Fatalf("%d pending events left, want 1: pending events must never be deleted", pending)
+	}
+	if got := balanceOf(t, l, acc.ID); got != 200 {
+		t.Fatalf("balance = %d, want 200", got)
+	}
+	assertLedgerConsistent(t, pool)
+}
+
 func TestOutboxFetchPendingSkipsLockedEvents(t *testing.T) {
 	ctx := context.Background()
 	l, pool := newLedger(t)

@@ -58,6 +58,9 @@ type IdempotencyRepository interface {
 	// returns the stored record and whether this call created it. If another
 	// in-flight transaction holds the same key, Reserve waits for it to finish.
 	Reserve(ctx context.Context, rec IdempotencyRecord) (IdempotencyRecord, bool, error)
+	// DeleteExpired deletes up to limit keys created before the given time
+	// and returns how many it deleted.
+	DeleteExpired(ctx context.Context, createdBefore time.Time, limit int) (int, error)
 }
 
 // OutboxRepository stores events until they are published.
@@ -67,6 +70,9 @@ type OutboxRepository interface {
 	// first. Events locked by a concurrent relay are skipped.
 	FetchPending(ctx context.Context, limit int) ([]domain.Event, error)
 	MarkPublished(ctx context.Context, ids []uuid.UUID, at time.Time) error
+	// DeletePublished deletes up to limit events published before the given
+	// time and returns how many it deleted. Pending events are never deleted.
+	DeletePublished(ctx context.Context, publishedBefore time.Time, limit int) (int, error)
 }
 
 // Store gives access to the repositories. The repositories of the Store

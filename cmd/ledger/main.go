@@ -61,6 +61,7 @@ func run() error {
 	publisher := rabbitmq.NewPublisher(cfg.AMQPURL, cfg.AMQPExchange, cfg.AMQPQueue, log)
 	defer publisher.Close()
 	relay := usecase.NewOutboxRelay(store, publisher, cfg.OutboxBatchSize, cfg.OutboxPollInterval, log)
+	retention := usecase.NewRetention(store, cfg.IdempotencyKeyTTL, cfg.OutboxRetention, cfg.CleanupInterval, log)
 
 	var shuttingDown atomic.Bool
 	ready := func(ctx context.Context) error {
@@ -89,6 +90,10 @@ func run() error {
 	})
 	g.Go(func() error {
 		relay.Run(gctx)
+		return nil
+	})
+	g.Go(func() error {
+		retention.Run(gctx)
 		return nil
 	})
 	g.Go(func() error {

@@ -31,6 +31,10 @@ type Config struct {
 
 	OutboxPollInterval time.Duration
 	OutboxBatchSize    int
+
+	IdempotencyKeyTTL time.Duration
+	OutboxRetention   time.Duration
+	CleanupInterval   time.Duration
 }
 
 // Load reads the configuration from the environment, applying defaults for
@@ -52,6 +56,9 @@ func Load() (Config, error) {
 		AMQPQueue:          os.Getenv("AMQP_QUEUE"),
 		OutboxPollInterval: parseVar("OUTBOX_POLL_INTERVAL", time.Second, time.ParseDuration, &errs),
 		OutboxBatchSize:    parseVar("OUTBOX_BATCH_SIZE", 100, strconv.Atoi, &errs),
+		IdempotencyKeyTTL:  parseVar("IDEMPOTENCY_KEY_TTL", 24*time.Hour, time.ParseDuration, &errs),
+		OutboxRetention:    parseVar("OUTBOX_RETENTION", 7*24*time.Hour, time.ParseDuration, &errs),
+		CleanupInterval:    parseVar("CLEANUP_INTERVAL", 15*time.Minute, time.ParseDuration, &errs),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -74,6 +81,15 @@ func Load() (Config, error) {
 	}
 	if cfg.ShutdownTimeout <= 0 {
 		errs = append(errs, errors.New("SHUTDOWN_TIMEOUT must be positive"))
+	}
+	if cfg.IdempotencyKeyTTL < time.Hour {
+		errs = append(errs, errors.New("IDEMPOTENCY_KEY_TTL must be at least 1h so that client retries stay safe"))
+	}
+	if cfg.OutboxRetention <= 0 {
+		errs = append(errs, errors.New("OUTBOX_RETENTION must be positive"))
+	}
+	if cfg.CleanupInterval <= 0 {
+		errs = append(errs, errors.New("CLEANUP_INTERVAL must be positive"))
 	}
 	return cfg, errors.Join(errs...)
 }
