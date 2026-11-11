@@ -8,18 +8,31 @@ info:
   description: |
     A double-entry payments ledger.
 
+    * Every `/v1` endpoint requires an API key sent as a bearer token
+      (`Authorization: Bearer lk_...`). Keys carry a client ID and a role:
+      `client` or `operator`.
+    * Clients can only read, and transfer from, the accounts they opened. An
+      account the caller can't access returns `404 account_not_found`, exactly
+      like an unknown account. Deposits and withdrawals require the
+      `operator` role. Operators can also read every account.
+    * Requests are rate limited per client. Requests that fail authentication
+      are rate limited per remote address. Throttled requests get
+      `429 rate_limited` with a `Retry-After` header.
     * All amounts are integers in the currency's minor unit (e.g. cents for USD).
-    * Every write endpoint requires an `Idempotency-Key` header. Retrying a
-      request with the same key and the same body returns the original result
-      with `Idempotent-Replayed: true` instead of posting it again. Reusing a key
+    * Every write endpoint requires an `Idempotency-Key` header. Keys are
+      scoped to the authenticated client and expire after a retention period
+      (24 hours by default). Retrying a request with the same key and the
+      same body within that period returns the original result with
+      `Idempotent-Replayed: true` instead of posting it again. Reusing a key
       with a different body is rejected with `422 idempotency_key_reused`.
       Requests that fail do not consume their key.
     * Every response carries an `X-Request-ID` header (the caller's value is
       echoed if provided).
 servers:
   - url: http://localhost:8080
-# Authentication is out of scope for this service; put it behind a gateway.
-security: []
+    description: Local development. Deployments must serve the API over HTTPS.
+security:
+  - apiKey: []
 tags:
   - name: Accounts
     description: Open accounts and read balances and statements.
@@ -34,6 +47,7 @@ paths:
       tags: [Accounts]
       operationId: createAccount
       summary: Open an account
+      description: The new account is owned by the calling client.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -59,8 +73,12 @@ paths:
                 $ref: "#/components/schemas/Account"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -69,6 +87,7 @@ paths:
       tags: [Accounts]
       operationId: getAccount
       summary: Get an account and its balance
+      description: Available to the account's owner and to operators.
       parameters:
         - $ref: "#/components/parameters/AccountID"
       responses:
@@ -80,8 +99,12 @@ paths:
                 $ref: "#/components/schemas/Account"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -90,6 +113,7 @@ paths:
       tags: [Money movement]
       operationId: deposit
       summary: Deposit money into an account
+      description: Requires the `operator` role.
       parameters:
         - $ref: "#/components/parameters/AccountID"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -104,10 +128,16 @@ paths:
           $ref: "#/components/responses/TransactionPosted"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -116,7 +146,9 @@ paths:
       tags: [Money movement]
       operationId: withdraw
       summary: Withdraw money from an account
-      description: Fails with `422 insufficient_funds` if the balance does not cover the amount.
+      description: |
+        Requires the `operator` role. Fails with `422 insufficient_funds` if
+        the balance does not cover the amount.
       parameters:
         - $ref: "#/components/parameters/AccountID"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -131,10 +163,16 @@ paths:
           $ref: "#/components/responses/TransactionPosted"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -147,7 +185,8 @@ paths:
         Returns the account statement, newest first. Each line shows the signed
         amount from this account's point of view and the balance right after it.
         Pagination is keyset based: pass `next_cursor` from the previous page as
-        `cursor` to get the next one.
+        `cursor` to get the next one. Available to the account's owner and to
+        operators.
       parameters:
         - $ref: "#/components/parameters/AccountID"
         - name: limit
@@ -171,8 +210,12 @@ paths:
                 $ref: "#/components/schemas/TransactionList"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -181,7 +224,11 @@ paths:
       tags: [Money movement]
       operationId: transfer
       summary: Transfer money between two accounts
-      description: Both accounts must use the same currency.
+      description: |
+        The caller must own `from_account_id`. Otherwise the request fails with
+        `404 account_not_found`, and this applies to operators too. The
+        destination can be any account in the same currency. The response
+        leaves out the destination entry's `balance_after`.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -195,10 +242,14 @@ paths:
           $ref: "#/components/responses/TransactionPosted"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -207,6 +258,7 @@ paths:
       tags: [Health]
       operationId: healthz
       summary: Liveness probe
+      security: []
       responses:
         "200":
           description: The process is running.
@@ -220,6 +272,7 @@ paths:
       tags: [Health]
       operationId: readyz
       summary: Readiness probe
+      security: []
       description: |
         Ready when the database is reachable and the service is not shutting
         down. The message broker is deliberately not checked: while it is down,
@@ -239,6 +292,15 @@ paths:
                 $ref: "#/components/schemas/Status"
 
 components:
+  securitySchemes:
+    apiKey:
+      type: http
+      scheme: bearer
+      description: |
+        API key issued by the service operator (`lk_` followed by 43
+        base64url characters). The service stores only the key's SHA-256
+        digest. Send it only over HTTPS.
+
   parameters:
     AccountID:
       name: id
@@ -251,7 +313,10 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      description: Client-generated unique key, e.g. a UUID. Up to 255 characters.
+      description: |
+        Client-generated unique key, e.g. a UUID. Up to 255 characters. Keys
+        are scoped to the authenticated client and expire after the service's
+        retention period (24 hours by default).
       schema:
         type: string
         minLength: 1
@@ -278,13 +343,46 @@ components:
       description: |
         Invalid request. Codes: `invalid_request`, `invalid_amount`,
         `invalid_currency`, `invalid_name`, `same_account`,
-        `idempotency_key_missing`, `idempotency_key_invalid`.
+        `idempotency_key_missing`, `idempotency_key_invalid`. A body that is
+        not valid JSON for the endpoint gets `invalid_request` with a generic
+        message.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: "Missing or invalid API key. Code: `unauthorized`."
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+            example: Bearer realm="go-ledger-service"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: "The caller's role does not allow this operation. Code: `forbidden`."
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     NotFound:
-      description: "Unknown account. Code: `account_not_found`."
+      description: |
+        Unknown account, or an account the caller is not allowed to access.
+        Code: `account_not_found`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: "Rate limit exceeded. Code: `rate_limited`."
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying.
+          schema:
+            type: integer
+            minimum: 1
       content:
         application/json:
           schema:
@@ -377,7 +475,7 @@ components:
 
     Entry:
       type: object
-      required: [account_id, amount, balance_after]
+      required: [account_id, amount]
       properties:
         account_id:
           type: string
@@ -392,6 +490,10 @@ components:
         balance_after:
           type: integer
           format: int64
+          description: |
+            Balance of the account right after this entry. Left out for the
+            destination of a transfer, so the payer does not learn the payee's
+            balance.
 
     Transaction:
       type: object
