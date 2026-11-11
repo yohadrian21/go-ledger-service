@@ -16,16 +16,24 @@ type Authenticator interface {
 
 type principalKey struct{}
 
-// authenticate rejects requests without valid credentials and passes the
-// authenticated client on in the request context.
+// authenticate rejects requests without valid credentials, applies the rate
+// limit and passes the authenticated client on in the request context.
+// Authenticated requests are limited per client. Failed attempts are limited
+// per remote address, so guessing keys is slow, while valid clients behind
+// the same proxy are not affected.
 func (h *handler) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, err := h.authn.Authenticate(r.Context(), bearerToken(r))
 		if err != nil {
-			writeUnauthorized(w)
+			if h.limiter.limit(w, "addr:"+remoteHost(r)) {
+				writeUnauthorized(w)
+			}
 			return
 		}
 		setAccessLogClientID(r.Context(), p.ClientID)
+		if !h.limiter.limit(w, "client:"+p.ClientID) {
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, p)))
 	})
 }

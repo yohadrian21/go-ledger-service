@@ -27,6 +27,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.IdempotencyKeyTTL != 24*time.Hour || cfg.OutboxRetention != 7*24*time.Hour || cfg.CleanupInterval != 15*time.Minute {
 		t.Errorf("unexpected retention defaults: %+v", cfg)
 	}
+	if cfg.RateLimitRPS != 20 || cfg.RateLimitBurst != 40 {
+		t.Errorf("unexpected rate limit defaults: %+v", cfg)
+	}
 }
 
 func TestLoadOverrides(t *testing.T) {
@@ -43,6 +46,8 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("IDEMPOTENCY_KEY_TTL", "48h")
 	t.Setenv("OUTBOX_RETENTION", "72h")
 	t.Setenv("CLEANUP_INTERVAL", "5m")
+	t.Setenv("RATE_LIMIT_RPS", "2.5")
+	t.Setenv("RATE_LIMIT_BURST", "5")
 
 	cfg, err := Load()
 	if err != nil {
@@ -54,6 +59,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.IdempotencyKeyTTL != 48*time.Hour || cfg.OutboxRetention != 72*time.Hour || cfg.CleanupInterval != 5*time.Minute {
 		t.Errorf("retention overrides not applied: %+v", cfg)
+	}
+	if cfg.RateLimitRPS != 2.5 || cfg.RateLimitBurst != 5 {
+		t.Errorf("rate limit overrides not applied: %+v", cfg)
 	}
 }
 
@@ -67,6 +75,8 @@ func TestLoadReportsAllErrors(t *testing.T) {
 	t.Setenv("IDEMPOTENCY_KEY_TTL", "5m")
 	t.Setenv("OUTBOX_RETENTION", "-1h")
 	t.Setenv("CLEANUP_INTERVAL", "0s")
+	t.Setenv("RATE_LIMIT_RPS", "NaN")
+	t.Setenv("RATE_LIMIT_BURST", "0")
 
 	_, err := Load()
 	if err == nil {
@@ -74,7 +84,7 @@ func TestLoadReportsAllErrors(t *testing.T) {
 	}
 	for _, want := range []string{
 		"DATABASE_URL", "AUTH_API_KEYS", "LOG_LEVEL", "DB_MAX_CONNS", "OUTBOX_BATCH_SIZE", "OUTBOX_POLL_INTERVAL",
-		"IDEMPOTENCY_KEY_TTL", "OUTBOX_RETENTION", "CLEANUP_INTERVAL",
+		"IDEMPOTENCY_KEY_TTL", "OUTBOX_RETENTION", "CLEANUP_INTERVAL", "RATE_LIMIT_RPS", "RATE_LIMIT_BURST",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error does not mention %s: %v", want, err)

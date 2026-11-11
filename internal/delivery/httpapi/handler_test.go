@@ -66,6 +66,7 @@ type apiOptions struct {
 	ledger httpapi.Ledger
 	ready  httpapi.ReadinessCheck
 	log    *slog.Logger
+	limit  httpapi.RateLimit
 }
 
 func newAPI(t *testing.T, opts apiOptions) *testAPI {
@@ -99,7 +100,7 @@ func newAPI(t *testing.T, opts apiOptions) *testAPI {
 		t.Fatal(err)
 	}
 
-	srv := httptest.NewServer(httpapi.NewHandler(opts.ledger, authn, opts.ready, opts.log))
+	srv := httptest.NewServer(httpapi.NewHandler(opts.ledger, authn, opts.limit, opts.ready, opts.log))
 	t.Cleanup(srv.Close)
 	as := func(authorization string) *client { return &client{t: t, srv: srv, authorization: authorization} }
 	return &testAPI{
@@ -467,6 +468,55 @@ func TestErrorResponses(t *testing.T) {
 	}
 }
 
+func TestInvalidBodyErrorsAreGeneric(t *testing.T) {
+	api := newAPI(t, apiOptions{})
+	for name, body := range map[string]string{
+		"malformed":     `{"name":`,
+		"unknown field": `{"name":"A","currency":"USD","is_admin":true}`,
+		"wrong type":    `{"name":["x"],"currency":"USD"}`,
+		"trailing data": `{"name":"A","currency":"USD"} {"x":1}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var apiErr apiError
+			resp := api.alice.do(http.MethodPost, "/v1/accounts", uuid.NewString(), body, &apiErr)
+			expectError(t, resp, apiErr, http.StatusBadRequest, "invalid_request")
+			if apiErr.Error.Message != "request body is not valid JSON for this endpoint" {
+				t.Fatalf("message = %q, want the generic message", apiErr.Error.Message)
+			}
+		})
+	}
+}
+
+func TestRateLimit(t *testing.T) {
+	// One request every 1000s: the burst is all a caller gets during the test.
+	api := newAPI(t, apiOptions{limit: httpapi.RateLimit{RequestsPerSecond: 0.001, Burst: 2}})
+	acc := api.alice.createAccount("USD")
+
+	expectStatus(t, api.alice.do(http.MethodGet, "/v1/accounts/"+acc.ID, "", "", nil), http.StatusOK)
+	var apiErr apiError
+	resp := api.alice.do(http.MethodGet, "/v1/accounts/"+acc.ID, "", "", &apiErr)
+	expectError(t, resp, apiErr, http.StatusTooManyRequests, "rate_limited")
+	if resp.Header.Get("Retry-After") == "" {
+		t.Fatal("429 response without Retry-After")
+	}
+
+	// Limits are per client.
+	expectStatus(t, api.bob.do(http.MethodGet, "/v1/accounts/"+acc.ID, "", "", nil), http.StatusNotFound)
+
+	// Failed authentication is limited per remote address and never reaches
+	// the client buckets.
+	expectStatus(t, api.anonymous.do(http.MethodGet, "/v1/accounts/"+acc.ID, "", "", nil), http.StatusUnauthorized)
+	expectStatus(t, api.anonymous.do(http.MethodGet, "/v1/accounts/"+acc.ID, "", "", nil), http.StatusUnauthorized)
+	resp = api.anonymous.do(http.MethodGet, "/v1/accounts/"+acc.ID, "", "", &apiErr)
+	expectError(t, resp, apiErr, http.StatusTooManyRequests, "rate_limited")
+	expectStatus(t, api.bob.do(http.MethodGet, "/v1/accounts/"+acc.ID, "", "", nil), http.StatusNotFound)
+
+	// Probes are never limited.
+	for range 5 {
+		expectStatus(t, api.anonymous.do(http.MethodGet, "/healthz", "", "", nil), http.StatusOK)
+	}
+}
+
 func TestRequestBodyTooLarge(t *testing.T) {
 	api := newAPI(t, apiOptions{})
 	body := `{"name":"` + strings.Repeat("a", 2<<20) + `","currency":"USD"}`
@@ -499,7 +549,7 @@ func TestRequestIDHeader(t *testing.T) {
 	req.Header.Set("X-Request-ID", "abc-123")
 	rec := httptest.NewRecorder()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	httpapi.NewHandler(usecase.NewLedger(memory.New()), nil, nil, log).ServeHTTP(rec, req)
+	httpapi.NewHandler(usecase.NewLedger(memory.New()), nil, httpapi.RateLimit{}, nil, log).ServeHTTP(rec, req)
 	if got := rec.Header().Get("X-Request-ID"); got != "abc-123" {
 		t.Fatalf("X-Request-ID = %q, want the caller's id", got)
 	}

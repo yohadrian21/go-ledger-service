@@ -35,15 +35,16 @@ type Ledger interface {
 type ReadinessCheck func(ctx context.Context) error
 
 type handler struct {
-	ledger Ledger
-	authn  Authenticator
-	ready  ReadinessCheck
-	log    *slog.Logger
+	ledger  Ledger
+	authn   Authenticator
+	limiter *rateLimiter
+	ready   ReadinessCheck
+	log     *slog.Logger
 }
 
 // NewHandler returns the HTTP handler with all routes and middleware.
-func NewHandler(ledger Ledger, authn Authenticator, ready ReadinessCheck, log *slog.Logger) http.Handler {
-	h := &handler{ledger: ledger, authn: authn, ready: ready, log: log}
+func NewHandler(ledger Ledger, authn Authenticator, limit RateLimit, ready ReadinessCheck, log *slog.Logger) http.Handler {
+	h := &handler{ledger: ledger, authn: authn, limiter: newRateLimiter(limit, time.Now), ready: ready, log: log}
 
 	api := http.NewServeMux()
 	api.HandleFunc("POST /v1/accounts", withCaller(h.createAccount))
@@ -57,7 +58,7 @@ func NewHandler(ledger Ledger, authn Authenticator, ready ReadinessCheck, log *s
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("GET /readyz", h.readyz)
 	// Everything under /v1/, including routes added later, requires a valid
-	// API key.
+	// API key and is rate limited.
 	mux.Handle("/v1/", h.authenticate(api))
 
 	return withRequestID(withAccessLog(log, withRecovery(log, mux)))

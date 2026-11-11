@@ -73,7 +73,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewHandler(usecase.NewLedger(store), authn, ready, log),
+		Handler:           httpapi.NewHandler(usecase.NewLedger(store), authn, httpapi.RateLimit{RequestsPerSecond: cfg.RateLimitRPS, Burst: cfg.RateLimitBurst}, ready, log),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      30 * time.Second,
